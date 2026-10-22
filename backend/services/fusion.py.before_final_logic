@@ -1,0 +1,293 @@
+"""
+Fusion layer for combining AI predictions and external fact-check results.
+"""
+
+
+def claims_match(submitted_claim: str, checked_claim: str) -> bool:
+    """Check whether a fact-check refers to the submitted claim."""
+    import re
+
+    stop_words = {
+        # English
+        "the", "is", "a", "an", "and", "or", "of", "to",
+        "in", "on", "for", "with", "was", "were", "are",
+        "has", "have", "had", "that", "this", "it", "did",
+        "not", "no",
+        # Hindi
+        "और", "का", "की", "के", "है", "हैं", "था", "थे",
+        "को", "में", "पर", "से", "यह", "कि", "ने",
+        # Marathi
+        "आणि", "आहे", "आहेत", "होते", "होती", "चा", "ची",
+        "चे", "मध्ये", "वर", "यांनी", "की"
+    }
+
+    def words(text):
+        tokens = re.findall(
+            r"[^\W_]+",
+            (text or "").lower(),
+            flags=re.UNICODE
+        )
+        return {
+            token for token in tokens
+            if len(token) > 1 and token not in stop_words
+        }
+
+    submitted_words = words(submitted_claim)
+    checked_words = words(checked_claim)
+
+    if not submitted_words or not checked_words:
+        return False
+
+    overlap = submitted_words & checked_words
+    similarity = len(overlap) / len(submitted_words)
+
+    # Require at least two shared terms and reasonable overlap.
+    return len(overlap) >= min(2, len(submitted_words)) and similarity >= 0.4
+
+
+def normalize_rating(rating: str) -> str:
+    if not rating:
+        return ""
+
+    value = rating.strip().lower()
+
+    if (
+        value in {"false", "false.", "mostly false", "incorrect", "fake"}
+        or value.startswith("false.")
+        or value.startswith("mostly false")
+    ):
+        return "REFUTED"
+
+    if value in {
+        "true",
+        "true.",
+        "mostly true",
+        "correct",
+    }:
+        return "SUPPORTED"
+
+    if value in {
+        "misleading",
+        "missing context",
+        "out of context",
+    }:
+        return "MISLEADING"
+
+    return "UNKNOWN"
+
+
+def calculate_confidence(
+    verdict,
+    model_prediction=None,
+    supported=0,
+    refuted=0,
+    misleading=0,
+    total=0
+):
+    if model_prediction and model_prediction.get("source") == "Built-in knowledge rule":
+            return (
+                float(model_prediction.get("confidence", 1.0)) * 100,
+                "verified knowledge rule",
+            )
+    # If external fact-check results exist,
+    # confidence represents agreement among retrieved sources.
+    if total > 0:
+
+        if verdict == "LIKELY FALSE":
+            confidence = (refuted / total) * 100
+
+        elif verdict == "LIKELY TRUE":
+            confidence = (supported / total) * 100
+
+        elif verdict == "MISLEADING":
+            confidence = (misleading / total) * 100
+
+        else:
+            confidence = 0
+
+        return round(confidence, 1), "fact-check agreement"
+
+    probabilities = {}
+    model_verdict = None
+
+    # If no external fact-checks exist but the model
+    # has an actual probability distribution, use it.
+    if model_prediction:
+        probabilities = model_prediction.get("probabilities", {})
+        model_verdict = model_prediction.get("verdict")
+
+    # Do not treat the safety-rule NOT ENOUGH INFO
+    # response as model confidence.
+    if model_verdict == "NOT ENOUGH INFO":
+        return 0.0, "insufficient evidence"
+
+    
+
+    if probabilities:
+        highest = max(probabilities.values())
+        return round(float(highest) * 100, 1), "AI model probability"
+
+    return 0.0, "insufficient evidence"
+
+
+def analyze(
+    model_prediction=None,
+    fact_checks=None,
+    news_sources=None,
+    submitted_claim=""
+):
+    
+    fact_checks = fact_checks or []
+    news_sources = news_sources or []
+
+    normalized = []
+
+    # Keep only fact-checks that match the submitted claim.
+    for item in fact_checks:
+        checked_claim = str(item.get("claim", ""))
+
+        if not claims_match(submitted_claim, checked_claim):
+            continue
+
+        normalized.append({
+            "claim": checked_claim,
+            "publisher": item.get("publisher"),
+            "rating": item.get("rating"),
+            "normalized_rating": normalize_rating(
+                item.get("rating", "")
+            ),
+            "url": item.get("url"),
+        })
+
+    supported = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "SUPPORTED"
+    )
+
+    refuted = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "REFUTED"
+    )
+
+    misleading = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "MISLEADING"
+    )
+
+
+    # Final verdict:
+    # 1. External fact-checks take priority when available.
+    # 2. Otherwise use the AI model prediction.
+    # 3. If neither provides a usable conclusion, return insufficient evidence.
+
+    if refuted > 0 and supported == 0:
+        final_verdict = "LIKELY FALSE"
+
+    elif supported > 0 and refuted == 0:
+        final_verdict = "LIKELY TRUE"
+
+    elif misleading > 0 and refuted == 0 and supported == 0:
+        final_verdict = "MISLEADING"
+
+    elif len(normalized) == 0 and model_prediction:
+        model_verdict = str(
+            model_prediction.get("verdict", "")
+        ).strip().upper()
+
+        # Built-in rules have explicit reasons and known-claim mappings.
+        if model_prediction.get("source") == "Built-in knowledge rule":
+            if model_verdict == "SUPPORTS":
+                final_verdict = "LIKELY TRUE"
+            elif model_verdict == "REFUTES":
+                final_verdict = "LIKELY FALSE"
+            else:
+                final_verdict = "INSUFFICIENT EVIDENCE"
+
+                # Use the ML prediction as a provisional verdict when
+        # no external fact-check is available.
+        elif model_verdict == "FAKE":
+            final_verdict = "LIKELY FALSE"
+
+        elif model_verdict == "REAL":
+            final_verdict = "LIKELY TRUE"
+
+        elif model_verdict == "SUPPORTS":
+            final_verdict = "LIKELY TRUE"
+
+        elif model_verdict == "REFUTES":
+            final_verdict = "LIKELY FALSE"
+
+        else:
+            final_verdict = "INSUFFICIENT EVIDENCE"
+
+    else:
+        final_verdict = "INSUFFICIENT EVIDENCE"
+
+    # Current news sources are treated as corroborating
+    # sources, not as proof of truth or falsehood.
+
+    news_source_count: int = len(news_sources)
+
+    news_publishers = []
+
+    for item in news_sources:
+        publisher = item.get("publisher")
+
+        if publisher and publisher not in news_publishers:
+            news_publishers.append(publisher)
+
+    confidence, confidence_source = calculate_confidence(
+        verdict=final_verdict,
+        model_prediction=model_prediction,
+        supported=supported,
+        refuted=refuted,
+        misleading=misleading,
+        total=len(normalized)
+    )
+
+    return {
+        "verdict": final_verdict,
+
+        "confidence": confidence,
+
+        "confidence_source": confidence_source,
+
+        "signals": {
+            "model_available": model_prediction is not None,
+
+            "model_verdict": (
+                model_prediction.get("verdict")
+                if model_prediction
+                else None
+            ),
+
+            "fact_check_results": len(normalized),
+
+            "fact_check_refuted": refuted,
+
+            "fact_check_supported": supported,
+
+            "fact_check_misleading": misleading,
+
+            "news_sources": news_source_count,
+        },
+
+        "fact_check_summary": {
+            "supported": supported,
+            "refuted": refuted,
+            "misleading": misleading,
+            "total": len(normalized),
+        },
+
+                "model_prediction": model_prediction,
+
+        "fact_checks": normalized,
+
+        "news_sources": news_sources,
+
+        "news_summary": {
+            "total_sources": news_source_count,
+            "unique_publishers": len(news_publishers),
+            "publishers": news_publishers,
+        },
+    }

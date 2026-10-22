@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI Fake News Detector</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="brand"><span class="logo" id="ic-shield-slot"></span><span>AI Fake News Detector</span></div>
+  <div class="navlinks" id="navlinks"></div>
+  <button class="logout-btn" id="logoutBtn"></button>
+</nav>
+
+<div class="shell" id="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main>
+    <section id="view-home"></section>
+    <section id="view-result" hidden></section>
+    <section id="view-dashboard" hidden></section>
+    <section id="view-history" hidden></section>
+    <section id="view-about" hidden></section>
+    <section id="view-contact" hidden></section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- offscreen report template used for PDF export -->
+<div id="reportTemplate" style="position:fixed; left:-9999px; top:0; width:760px; background:#fff; color:#111; font-family:'Inter',sans-serif;"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

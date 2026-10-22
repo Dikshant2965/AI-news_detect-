@@ -1,0 +1,222 @@
+"""
+Fusion layer for combining AI predictions and external fact-check results.
+"""
+
+def normalize_rating(rating: str) -> str:
+    if not rating:
+        return ""
+
+    value = rating.strip().lower()
+
+    if value in {
+        "false",
+        "false.",
+        "mostly false",
+        "incorrect",
+        "fake",
+    }:
+        return "REFUTED"
+
+    if value in {
+        "true",
+        "true.",
+        "mostly true",
+        "correct",
+    }:
+        return "SUPPORTED"
+
+    if value in {
+        "misleading",
+        "missing context",
+        "out of context",
+    }:
+        return "MISLEADING"
+
+    return "UNKNOWN"
+
+
+def calculate_confidence(
+    verdict,
+    model_prediction=None,
+    supported=0,
+    refuted=0,
+    misleading=0,
+    total=0
+):
+    # If external fact-check results exist,
+    # confidence represents agreement among retrieved sources.
+    if total > 0:
+
+        if verdict == "LIKELY FALSE":
+            confidence = (refuted / total) * 100
+
+        elif verdict == "LIKELY TRUE":
+            confidence = (supported / total) * 100
+
+        elif verdict == "MISLEADING":
+            confidence = (misleading / total) * 100
+
+        else:
+            confidence = 0
+
+        return round(confidence, 1), "fact-check agreement"
+
+    probabilities = {}
+    model_verdict = None
+
+    # If no external fact-checks exist but the model
+    # has an actual probability distribution, use it.
+    if model_prediction:
+        probabilities = model_prediction.get("probabilities", {})
+        model_verdict = model_prediction.get("verdict")
+
+    # Do not treat the safety-rule NOT ENOUGH INFO
+    # response as model confidence.
+    if model_verdict == "NOT ENOUGH INFO":
+        return 0.0, "insufficient evidence"
+
+    if model_prediction and model_prediction.get("source") == "Built-in knowledge rule":
+        return (
+            float(model_prediction.get("confidence", 1.0)) * 100,
+            "verified knowledge rule",
+        )
+
+    if probabilities:
+        highest = max(probabilities.values())
+        return round(float(highest) * 100, 1), "AI model probability"
+
+    return 0.0, "insufficient evidence"
+
+
+def analyze(
+    model_prediction=None,
+    fact_checks=None,
+    news_sources=None
+):
+    fact_checks = fact_checks or []
+    news_sources = news_sources or []
+
+    normalized = []
+
+    for item in fact_checks:
+        normalized.append({
+            "publisher": item.get("publisher"),
+            "rating": item.get("rating"),
+            "normalized_rating": normalize_rating(
+                item.get("rating", "")
+            ),
+            "url": item.get("url"),
+        })
+
+    supported = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "SUPPORTED"
+    )
+
+    refuted = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "REFUTED"
+    )
+
+    misleading = sum(
+        1 for item in normalized
+        if item["normalized_rating"] == "MISLEADING"
+    )
+
+    # Final verdict:
+    # 1. External fact-checks take priority when available.
+    # 2. Otherwise use the AI model prediction.
+    # 3. If neither provides a usable conclusion, return insufficient evidence.
+
+    if refuted > 0 and supported == 0:
+        final_verdict = "LIKELY FALSE"
+
+    elif supported > 0 and refuted == 0:
+        final_verdict = "LIKELY TRUE"
+
+    elif misleading > 0 and refuted == 0 and supported == 0:
+        final_verdict = "MISLEADING"
+
+    elif len(normalized) == 0 and model_prediction:
+        model_verdict = model_prediction.get("verdict")
+
+        if model_verdict == "SUPPORTS":
+            final_verdict = "LIKELY TRUE"
+
+        elif model_verdict == "REFUTES":
+            final_verdict = "LIKELY FALSE"
+
+        else:
+            final_verdict = "INSUFFICIENT EVIDENCE"
+
+    else:
+        final_verdict = "INSUFFICIENT EVIDENCE"
+
+    # Current news sources are treated as corroborating
+    # sources, not as proof of truth or falsehood.
+
+    news_source_count: int = len(news_sources)
+
+    news_publishers = []
+
+    for item in news_sources:
+        publisher = item.get("publisher")
+
+        if publisher and publisher not in news_publishers:
+            news_publishers.append(publisher)
+
+    confidence, confidence_source = calculate_confidence(
+        verdict=final_verdict,
+        model_prediction=model_prediction,
+        supported=supported,
+        refuted=refuted,
+        misleading=misleading,
+        total=len(normalized)
+    )
+
+    return {
+        "verdict": final_verdict,
+
+        "confidence": confidence,
+
+        "confidence_source": confidence_source,
+
+        "signals": {
+            "model_available": model_prediction is not None,
+
+            "model_verdict": (
+                model_prediction.get("verdict")
+                if model_prediction
+                else None
+            ),
+
+            "fact_check_results": len(normalized),
+
+            "fact_check_refuted": refuted,
+
+            "fact_check_supported": supported,
+
+            "fact_check_misleading": misleading,
+
+            "news_sources": news_source_count,
+        },
+
+        "fact_check_summary": {
+            "supported": supported,
+            "refuted": refuted,
+            "misleading": misleading,
+            "total": len(normalized),
+        },
+
+                "model_prediction": model_prediction,
+
+        "fact_checks": normalized,
+
+        "news_sources": news_sources,
+
+        "news_summary": {
+            "total_sources": news_source_count,
+            "unique_publishers": len(news_publishers),
+            "publishers": news_publishers,
+        },
+    }

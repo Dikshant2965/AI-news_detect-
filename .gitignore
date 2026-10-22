@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.db
+backend/models/checkpoints/
+backend/models/*.safetensors
+backend/models/*.bin
+data/processed/*
+
+# Large datasets and trained model checkpoints
+/models/xlmr_english/
+/models/english_baseline/*.joblib
+/backend/models/*.joblib
+/data/raw/english/wiki-pages/
+/data/raw/english/train.jsonl
+/data/raw/hindi/*.xlsx
